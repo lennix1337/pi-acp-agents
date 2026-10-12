@@ -9,6 +9,7 @@ import { platform } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { stripAgentBootBanner } from "./output-cleaner.js";
 import { decidePermission } from "./permission.js";
+import { recordUsage } from "./usage-ledger.js";
 
 /**
  * Creates a filtered ReadableStream that strips non-JSON lines from agent stdout.
@@ -614,6 +615,7 @@ export class AcpClient {
 			);
 		}
 
+		recordUsage(this.agentName, resp.usage);
 		return { text: stripAgentBootBanner(this.collectedText), stopReason: resp.stopReason };
 	}
 

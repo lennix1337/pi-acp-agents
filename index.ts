@@ -43,6 +43,7 @@ import { HookTriggerManager } from "./src/hooks/trigger-wiring.js";
 import { SocketPublisher } from "./src/hooks/socket-bus.js";
 import { WakeSubscriber } from "./src/hooks/wake-subscriber.js";
 import { loadHookConfig } from "./src/hooks/config.js";
+import { buildQuotaReport } from "./src/quota/quota.js";
 import { registerHooksPolicyTools, type PolicyStore } from "./src/hooks/policy-tools.js";
 import { NonBlockingRunner } from "./src/hooks/non-blocking.js";
 import { defaultHooksDir } from "./src/hooks/types.js";
@@ -1538,13 +1539,20 @@ export default function (pi: ExtensionAPI) {
       session_name: Type.Optional(Type.String({ description: "Friendly session name to inspect" })),
       action: Type.Optional(Type.String({ description: "Maintenance action: 'prune' (mark stale workers offline), 'cleanup' (remove sessions + clear tasks/mailboxes), 'fleet' (show active async runs), 'interrupt' (abort in-flight async run → needs-attention), 'resume' (re-engage interrupted async run), 'steer' (inject guidance into async run). Omit for status display." })),
       target: Type.Optional(Type.String({ description: "Cleanup target: 'all', 'sessions', 'tasks', 'mailboxes'. Default: 'all'." })),
-      view: Type.Optional(Type.String({ description: "View filter: 'fleet' for compact active-runs overview with telemetry." })),
+      agent: Type.Optional(Type.String({ description: "Agent name for view: 'quota' (default: all agents)" })),
+      view: Type.Optional(Type.String({ description: "View filter: 'fleet' for compact active-runs overview with telemetry; 'quota' for remaining quota per agent and tokens used this session." })),
       id: Type.Optional(Type.String({ description: "Async run ID for action: 'interrupt' or 'resume'." })),
       message: Type.Optional(Type.String({ description: "Optional message for action: 'resume'." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       config = loadConfig();
       governanceStore().setModelPolicy(config.modelPolicy ?? {});
+
+      // ── view: quota — remaining quota per agent (quota_command) + tokens used this session ──
+      if (params.view === "quota") {
+        const report = await buildQuotaReport(config.agent_servers, params.agent);
+        return { content: [textContent(report.text)], details: { quota: report.results } };
+      }
 
       // ── action: fleet / view: fleet — show active async runs with telemetry ──
       if (params.action === "fleet" || params.view === "fleet") {
