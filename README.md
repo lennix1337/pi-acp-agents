@@ -291,6 +291,22 @@ acp_status({ action: "interrupt", id: "<runId>" })   // abort in-flight turn →
 acp_status({ action: "resume", id: "<runId>", message: "Continue with X" })
 ```
 
+### Remaining quota
+
+ACP has no quota method. Give an agent a `quota_command` (argv array, no shell, 15 s timeout) that prints one JSON reading and `acp_status({ view: "quota" })` reports it next to the tokens used this session:
+
+```json
+{ "remaining": 64.3, "limit": 100, "unit": "%", "resetsAt": "2026-10-14T18:47:10Z",
+  "detail": "most constrained bucket",
+  "buckets": [{ "name": "Gemini weekly", "remaining": 64.3, "limit": 100, "unit": "%" }] }
+```
+
+The headline is the binding limit; `buckets` (optional) lists every limit. Agents without a `quota_command` report "unavailable" instead of a guess.
+
+### Following a run
+
+`acp_status({ view: "activity", since: <cursor> })` returns the tool calls, messages and turn ends of every spawned agent since the cursor and the next cursor to pass back.
+
 ### Silent-failure detection
 
 Runs that complete with zero tool calls, zero file writes, AND empty text are auto-flagged as `failed` with `error: "silent-no-output"`.
@@ -350,6 +366,7 @@ Config file: `~/.pi/acp-agents/config.json`
 | `env` | no | Extra env vars |
 | `cwd` | no | Working dir override |
 | `default_model` | no | Default model ID |
+| `quota_command` | no | argv that prints the agent's remaining quota as JSON (see [Remaining quota](#remaining-quota)) |
 
 For aliases, model policy, and runtime store paths see [`docs/USAGE.md`](docs/USAGE.md).
 

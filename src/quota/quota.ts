@@ -4,7 +4,9 @@
  * ACP has no quota method, so each agent profile may declare a
  * `quota_command` (argv array, no shell) that prints one JSON object:
  *   { "remaining": number, "limit"?: number, "unit"?: string,
- *     "resetsAt"?: string, "detail"?: string }
+ *     "resetsAt"?: string, "detail"?: string, "buckets"?: Bucket[] }
+ * where the headline reading is the binding limit and `buckets` lists every
+ * limit the backend enforces ({ "name", "remaining", "limit"?, "unit"?, "resetsAt"? }).
  * Agents without a source report that plainly instead of guessing.
  */
 import { execFile } from "node:child_process";
@@ -12,12 +14,21 @@ import { execFile } from "node:child_process";
 import type { AcpAgentConfig } from "../config/types.js";
 import { usageFor } from "../core/usage-ledger.js";
 
+export interface QuotaBucket {
+	name: string;
+	remaining: number;
+	limit?: number;
+	unit?: string;
+	resetsAt?: string;
+}
+
 export interface QuotaReading {
 	remaining: number;
 	limit?: number;
 	unit?: string;
 	resetsAt?: string;
 	detail?: string;
+	buckets?: QuotaBucket[];
 }
 
 export type QuotaResult =
@@ -36,15 +47,30 @@ export function parseQuotaOutput(stdout: string): QuotaReading {
 	}
 	if (typeof raw !== "object" || raw === null) throw new Error("quota JSON must be an object");
 	const o = raw as Record<string, unknown>;
+	const reading: QuotaReading = { ...parseFigures(o) };
+	if (typeof o.detail === "string") reading.detail = o.detail;
+	if (o.buckets !== undefined) {
+		if (!Array.isArray(o.buckets)) throw new Error("quota JSON 'buckets' must be an array");
+		reading.buckets = o.buckets.map((b) => {
+			if (typeof b !== "object" || b === null) throw new Error("quota bucket must be an object");
+			const bucket = b as Record<string, unknown>;
+			if (typeof bucket.name !== "string") throw new Error("quota bucket needs a string 'name'");
+			return { name: bucket.name, ...parseFigures(bucket) };
+		});
+	}
+	return reading;
+}
+
+function parseFigures(o: Record<string, unknown>): Omit<QuotaBucket, "name"> {
 	if (typeof o.remaining !== "number" || !Number.isFinite(o.remaining) || o.remaining < 0) {
 		throw new Error("quota JSON needs a non-negative numeric 'remaining'");
 	}
-	const reading: QuotaReading = { remaining: o.remaining };
-	if (typeof o.limit === "number" && Number.isFinite(o.limit)) reading.limit = o.limit;
-	for (const key of ["unit", "resetsAt", "detail"] as const) {
-		if (typeof o[key] === "string") reading[key] = o[key] as string;
+	const figures: Omit<QuotaBucket, "name"> = { remaining: o.remaining };
+	if (typeof o.limit === "number" && Number.isFinite(o.limit)) figures.limit = o.limit;
+	for (const key of ["unit", "resetsAt"] as const) {
+		if (typeof o[key] === "string") figures[key] = o[key] as string;
 	}
-	return reading;
+	return figures;
 }
 
 function runCommand(argv: string[], timeoutMs: number): Promise<string> {
@@ -79,13 +105,19 @@ export async function readQuota(
 	}
 }
 
+function renderFigures({ remaining, limit, unit, resetsAt }: Omit<QuotaBucket, "name">): string {
+	const of = limit === undefined ? "" : ` of ${limit}`;
+	return `${remaining}${of} ${unit ?? "units"} left${resetsAt ? `, resets ${resetsAt}` : ""}`;
+}
+
 export function renderQuota(results: QuotaResult[]): string {
 	return results
 		.map((r) => {
 			if (r.status === "unavailable") return `${r.agent}: unavailable — ${r.reason}`;
-			const { remaining, limit, unit, resetsAt, detail } = r.reading;
-			const of = limit === undefined ? "" : ` of ${limit}`;
-			return `${r.agent}: ${remaining}${of} ${unit ?? "units"} left${resetsAt ? `, resets ${resetsAt}` : ""}${detail ? ` — ${detail}` : ""}`;
+			const { detail, buckets } = r.reading;
+			const lines = [`${r.agent}: ${renderFigures(r.reading)}${detail ? ` — ${detail}` : ""}`];
+			for (const b of buckets ?? []) lines.push(`  ${b.name}: ${renderFigures(b)}`);
+			return lines.join("\n");
 		})
 		.join("\n");
 }

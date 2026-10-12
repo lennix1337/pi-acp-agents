@@ -17,6 +17,35 @@ describe("quota", () => {
 		expect(() => parseQuotaOutput('{"remaining":"5"}')).toThrow(/remaining/);
 	});
 
+	it("parses buckets and renders one line per bucket", () => {
+		const reading = parseQuotaOutput(
+			JSON.stringify({
+				remaining: 64.3,
+				limit: 100,
+				unit: "%",
+				detail: "most constrained bucket",
+				buckets: [
+					{ name: "Gemini weekly", remaining: 64.3, limit: 100, unit: "%", resetsAt: "2026-10-14T18:47:10Z" },
+					{ name: "Gemini 5h", remaining: 92.2, limit: 100, unit: "%" },
+				],
+			}),
+		);
+		expect(reading.buckets).toHaveLength(2);
+		expect(renderQuota([{ agent: "agy", status: "ok", reading }])).toBe(
+			[
+				"agy: 64.3 of 100 % left — most constrained bucket",
+				"  Gemini weekly: 64.3 of 100 % left, resets 2026-10-14T18:47:10Z",
+				"  Gemini 5h: 92.2 of 100 % left",
+			].join("\n"),
+		);
+	});
+
+	it("rejects malformed buckets", () => {
+		expect(() => parseQuotaOutput('{"remaining":1,"buckets":"x"}')).toThrow(/buckets/);
+		expect(() => parseQuotaOutput('{"remaining":1,"buckets":[{"remaining":1}]}')).toThrow(/name/);
+		expect(() => parseQuotaOutput('{"remaining":1,"buckets":[{"name":"a","remaining":-2}]}')).toThrow(/remaining/);
+	});
+
 	it("reports unavailable without a quota_command", async () => {
 		const r = await readQuota("agy", { command: "x" });
 		expect(r.status).toBe("unavailable");
