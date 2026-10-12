@@ -395,8 +395,12 @@ describe("AcpClient — deep branches", () => {
 			await client.connect();
 
 			const requestPermCb = capturedCallbacks().requestPermission;
-			const result = await requestPermCb();
-			expect(result.outcome).toBe("approved");
+			const result = await requestPermCb({
+				sessionId: "s1",
+				toolCall: { toolCallId: "t1" },
+				options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }],
+			});
+			expect(result.outcome).toEqual({ outcome: "selected", optionId: "yes" });
 		});
 	});
 });
