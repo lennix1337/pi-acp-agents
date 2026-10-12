@@ -9,6 +9,7 @@ import { platform } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { stripAgentBootBanner } from "./output-cleaner.js";
 import { decidePermission } from "./permission.js";
+import { recordActivity, recordTurnEnd } from "./activity-log.js";
 import { recordUsage } from "./usage-ledger.js";
 
 /**
@@ -616,6 +617,7 @@ export class AcpClient {
 		}
 
 		recordUsage(this.agentName, resp.usage);
+		if (this._sessionId) recordTurnEnd(this.agentName, this._sessionId, String(resp.stopReason));
 		return { text: stripAgentBootBanner(this.collectedText), stopReason: resp.stopReason };
 	}
 
@@ -721,6 +723,7 @@ export class AcpClient {
 		// Forward the raw update to the onSessionUpdate callback (heartbeat consumer,
 		// defensive parsing, zero-delta fallback, AcpEventLog logging, etc.)
 		if (this._sessionId) {
+			recordActivity(this.agentName, this._sessionId, params.update);
 			this.onSessionUpdate?.(this._sessionId, params.update);
 		}
 

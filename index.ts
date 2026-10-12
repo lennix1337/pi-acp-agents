@@ -43,6 +43,7 @@ import { HookTriggerManager } from "./src/hooks/trigger-wiring.js";
 import { SocketPublisher } from "./src/hooks/socket-bus.js";
 import { WakeSubscriber } from "./src/hooks/wake-subscriber.js";
 import { loadHookConfig } from "./src/hooks/config.js";
+import { readActivity, renderActivity } from "./src/core/activity-log.js";
 import { buildQuotaReport } from "./src/quota/quota.js";
 import { registerHooksPolicyTools, type PolicyStore } from "./src/hooks/policy-tools.js";
 import { NonBlockingRunner } from "./src/hooks/non-blocking.js";
@@ -1539,14 +1540,22 @@ export default function (pi: ExtensionAPI) {
       session_name: Type.Optional(Type.String({ description: "Friendly session name to inspect" })),
       action: Type.Optional(Type.String({ description: "Maintenance action: 'prune' (mark stale workers offline), 'cleanup' (remove sessions + clear tasks/mailboxes), 'fleet' (show active async runs), 'interrupt' (abort in-flight async run → needs-attention), 'resume' (re-engage interrupted async run), 'steer' (inject guidance into async run). Omit for status display." })),
       target: Type.Optional(Type.String({ description: "Cleanup target: 'all', 'sessions', 'tasks', 'mailboxes'. Default: 'all'." })),
-      agent: Type.Optional(Type.String({ description: "Agent name for view: 'quota' (default: all agents)" })),
-      view: Type.Optional(Type.String({ description: "View filter: 'fleet' for compact active-runs overview with telemetry; 'quota' for remaining quota per agent and tokens used this session." })),
+      agent: Type.Optional(Type.String({ description: "Agent name filter for view: 'quota' or 'activity' (default: all agents)" })),
+      since: Type.Optional(Type.Number({ description: "Cursor for view: 'activity'; returns only events after it (default 0 = everything buffered)." })),
+      view: Type.Optional(Type.String({ description: "View filter: 'fleet' for compact active-runs overview with telemetry; 'quota' for remaining quota per agent and tokens used this session; 'activity' for tool calls, messages and turn ends since a cursor (poll with the returned cursor; local, costs no agent turn)." })),
       id: Type.Optional(Type.String({ description: "Async run ID for action: 'interrupt' or 'resume'." })),
       message: Type.Optional(Type.String({ description: "Optional message for action: 'resume'." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       config = loadConfig();
       governanceStore().setModelPolicy(config.modelPolicy ?? {});
+
+      // ── view: activity — what the agents did since a cursor (local, no agent turn) ──
+      if (params.view === "activity") {
+        const { events, cursor } = readActivity({ since: params.since, agent: params.agent, sessionId: params.session_id, limit: 200 });
+        const body = renderActivity(events) || "(no new activity)";
+        return { content: [textContent(`${body}\n\ncursor: ${cursor} (pass since=${cursor} to poll again)`)], details: { cursor, events } };
+      }
 
       // ── view: quota — remaining quota per agent (quota_command) + tokens used this session ──
       if (params.view === "quota") {
