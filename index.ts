@@ -996,7 +996,13 @@ export default function (pi: ExtensionAPI) {
               try { asyncExecutor.reportTrackedProgress(asyncRunId); } catch { /* best-effort */ }
             }
           },
-          onSessionUpdate: heartbeatConsumer,
+          onSessionUpdate: (sid, update) => {
+            heartbeatConsumer(sid, update);
+            // A new `tool_call` is one tool step of the tracked run.
+            if (update.sessionUpdate === "tool_call" && asyncRunId && asyncExecutor) {
+              try { asyncExecutor.reportTrackedToolCall(asyncRunId); } catch { /* best-effort */ }
+            }
+          },
         });
         let handle: AcpSessionHandle | undefined;
         try {

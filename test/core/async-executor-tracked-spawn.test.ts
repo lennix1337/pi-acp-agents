@@ -105,6 +105,28 @@ describe("AsyncExecutor — tracked spawn lifecycle", () => {
 		expect(onWakeNotification).toHaveBeenCalledWith(runId, { reason: "silent-no-output" });
 	});
 
+	it("completeTrackedSpawn does not flag a run that made tool calls but returned no text", async () => {
+		const { AsyncExecutor } = await import("../../src/core/async-executor.js");
+		const onWakeNotification = vi.fn();
+		const executor = new AsyncExecutor(createMockCoordinator() as any, tmpDir, { onWakeNotification });
+
+		const runId = executor.trackExternalSpawn({
+			sessionId: "ses-tools",
+			agentName: "agy",
+			cwd: "/tmp/proj",
+			message: "Use tools",
+			cancel: vi.fn(),
+			reprompt: vi.fn(),
+		});
+		executor.reportTrackedToolCall(runId);
+		executor.completeTrackedSpawn(runId, { text: "" });
+
+		const record = executor.getStatus(runId);
+		expect(record!.state).toBe("completed");
+		expect(record!.toolCalls).toBe(1);
+		expect(onWakeNotification).not.toHaveBeenCalled();
+	});
+
 	it("failTrackedSpawn transitions to failed with error message", async () => {
 		const { AsyncExecutor } = await import("../../src/core/async-executor.js");
 		const coordinator = createMockCoordinator();

@@ -458,6 +458,18 @@ export class AsyncExecutor {
     }
   }
 
+  /**
+   * Count one tool call of a tracked spawn. Without it, a run whose agent only
+   * used tools and ended without text is misreported as `silent-no-output`.
+   */
+  reportTrackedToolCall(runId: string): void {
+    const telemetry = this.telemetryMap.get(runId);
+    if (!telemetry) return;
+    telemetry.toolCalls++;
+    telemetry.lastActivityAt = new Date().toISOString();
+    this.updateRun(runId, { toolCalls: telemetry.toolCalls, lastActivityAt: telemetry.lastActivityAt });
+  }
+
   /** Look up a tracked spawn by sessionId (for steer/interrupt via acp_msg). */
   findTrackedBySession(sessionId: string): TrackedSpawn | undefined {
     for (const spawn of this.trackedSpawns.values()) {
