@@ -8,6 +8,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { platform } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { stripAgentBootBanner } from "./output-cleaner.js";
+import { decidePermission } from "./permission.js";
 
 /**
  * Creates a filtered ReadableStream that strips non-JSON lines from agent stdout.
@@ -330,10 +331,11 @@ export class AcpClient {
 			() => ({
 				sessionUpdate: (params: SessionNotification) =>
 					this.handleSessionUpdate(params),
-				requestPermission: () =>
-					Promise.resolve({
-						outcome: "approved",
-					} as unknown as RequestPermissionResponse),
+				requestPermission: (params: RequestPermissionRequest) => {
+					const { response, summary } = decidePermission(params);
+					this.logger?.info("permission", summary);
+					return Promise.resolve(response);
+				},
 			}),
 			stream,
 		);
