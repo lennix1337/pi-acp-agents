@@ -96,6 +96,18 @@ describe("trigger-wiring result propagation — RED", () => {
 			expect(ctx.task).toBeDefined();
 			expect(ctx.task?.result).toBe("background suite finished cleanly");
 		});
+
+		it("appends the reply summary to the stop reason", async () => {
+			await manager.onSpawnCompleted({
+				sessionId: "sess-spawn-2",
+				agentName: "agy",
+				stopReason: "end_turn",
+				summary: "3 entries",
+				cwd: "/repo",
+			});
+
+			expect(lastContext().task?.result).toBe("end_turn: 3 entries");
+		});
 	});
 
 	// ── onSessionRemoved (error) → session_failed ────────────────────────────

@@ -61,6 +61,8 @@ export interface SubagentStopLike {
 	sessionId: string;
 	agentName: string;
 	stopReason?: string;
+	/** Short excerpt of the agent's reply, surfaced in the wake message. */
+	summary?: string;
 	cwd?: string;
 }
 
@@ -318,7 +320,9 @@ export class HookTriggerManager {
 			id: result.sessionId,
 			subject: "spawn",
 			status: "completed",
-			result: result.stopReason,
+			result: result.summary
+				? `${result.stopReason ?? "done"}: ${result.summary}`
+				: result.stopReason,
 		};
 		return safeFire(
 			this.dispatcher,

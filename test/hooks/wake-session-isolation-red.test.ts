@@ -210,6 +210,26 @@ describe("F1 RED — WakeSubscriber drops events from foreign sessions", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1);
 	});
 
+	it("delivers events of an ACP session added to the shared owned set after construction", async () => {
+		const pi = createMockPi();
+		const owned = new Set<string>();
+		const wake = new WakeSubscriber({
+			path: "/tmp/unused.sock",
+			pi,
+			hostSessionId: "host-1",
+			subscribedSessionIds: owned,
+			minIntervalMs: 0,
+			coalesceWindowMs: 0,
+		} as any);
+
+		await wake.handleEvent(makeEvent("acp.spawn_completed", "acp-7", "sub"));
+		expect(pi.sendMessage).not.toHaveBeenCalled();
+
+		owned.add("acp-7");
+		await wake.handleEvent(makeEvent("acp.spawn_completed", "acp-7", "sub"));
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+	});
+
 	it("ownership filter runs BEFORE mute — foreign session_completed is dropped regardless", async () => {
 		const pi = createMockPi();
 		const wake = new WakeSubscriber({

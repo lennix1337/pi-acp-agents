@@ -143,6 +143,10 @@ export default function (pi: ExtensionAPI) {
   // dispatcher's delegate always reads the live value.
   const hookPublisherRef: { current: SocketPublisher | null } = { current: null };
   let hookWake: WakeSubscriber | null = null;
+  // ACP session ids spawned by THIS host. Hook events carry the ACP session id
+  // (not the host's), so the wake ownership filter must treat them as owned or
+  // it drops every completion this host is waiting for.
+  const ownedAcpSessionIds = new Set<string>();
   let hookDispatcher: HookDispatcher;
   let hookRunner: NonBlockingRunner | typeof noopHookRunner;
   let hookTriggers: HookTriggerManager | typeof noopHookTriggers;
@@ -200,6 +204,7 @@ export default function (pi: ExtensionAPI) {
         }
         hookWake = new WakeSubscriber({
           path: hookConfig.socket.path,
+          subscribedSessionIds: ownedAcpSessionIds,
           pi: {
             sendMessage: (content: string, options: any, delivery: any) => {
               // Map new API to old sendUserMessage for backward compatibility
@@ -838,6 +843,7 @@ export default function (pi: ExtensionAPI) {
     archiveSession(handle);
     eventLog.append("session_created", { sessionId, agentName, cwd });
     // ACP Hooks: fire session_started (fire-and-forget, never blocks)
+    ownedAcpSessionIds.add(sessionId);
     hookTriggers.onSessionAdded({ id: sessionId, agent: agentName, cwd }).catch(() => {});
     return handle;
   }
@@ -1113,7 +1119,11 @@ export default function (pi: ExtensionAPI) {
                     await closeSession(bgHandle, "completed-oneshot", false);
                   } else {
                     // Long-lived async spawn completion → spawn_completed event
-                    hookTriggers.onSpawnCompleted({ sessionId, agentName, cwd: effectiveCwd }).catch(() => {});
+                    hookTriggers.onSpawnCompleted({
+                      sessionId, agentName, cwd: effectiveCwd,
+                      stopReason: pr.stopReason,
+                      summary: pr.text.replace(/\s+/g, " ").trim().slice(0, 300) || undefined,
+                    }).catch(() => {});
                   }
                 } catch (bgErr) {
                   const errMsg = bgErr instanceof Error ? bgErr.message : String(bgErr);
