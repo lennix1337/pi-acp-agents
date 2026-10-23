@@ -196,6 +196,9 @@ function parseHookEventConfig(
 		"task_assigned",
 		"task_completed",
 		"task_failed",
+		"spawn_completed",
+		"tool_call",
+		"tool_call_update",
 	]);
 	if (!validNames.has(key)) {
 		warn(`unknown hook event "${key}" — ignoring`);

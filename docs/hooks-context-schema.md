@@ -12,17 +12,26 @@ Passed to hook scripts via the `ACP_HOOK_CONTEXT_JSON` env var. Teams-compatible
 ```typescript
 interface HookContext {
   version: 1;
-  event: HookEventName;        // one of 9 events (see Event Catalog)
+  event: HookEventName;        // see Event Catalog
   source: "acp";               // always "acp" (LD11 — own layer)
   correlationId: string;       // LD17 — UUID v4 advisory dedup key
   session: { id: string; agent: string; cwd: string };
   agent: { name: string; type: string };
-  task?: {                     // present for task_* events
+  task?: {                     // task_* and legacy terminal/wake events
     id: string;
     subject: string;
     status: string;
-    result?: string;           // only on task_completed
+    result?: string;           // legacy task/wake content, not metadata-only
     durationMs?: number;
+  };
+  turn?: {                     // subagent_stop and spawn_completed
+    outcome: "success" | "error" | "cancelled" | "unknown";
+    stopReason?: string;        // native reason, or error/cancelled for rejection
+  };
+  tool?: {                     // metadata-only tool_call / tool_call_update
+    id: string;                // native toolCallId
+    name?: string;             // explicit native name only, NEVER title
+    status?: "pending" | "in_progress" | "completed" | "failed";
   };
   team?: { id: string; leadName: string };  // present when team context
   timestamp: string;           // ISO 8601
@@ -46,11 +55,11 @@ interface HookContext {
 | `ACP_SESSION_ID` | Session ID | — |
 | `ACP_TIMESTAMP` | ISO 8601 | `PI_TEAMS_EVENT_TIMESTAMP` |
 
-**cwd** = leader session's working directory.
+**cwd** = native session's working directory when supplied; otherwise the trigger's default.
 
 ## Event Catalog (LD8)
 
-All 9 events implemented (delegate-model only, LD14).
+Lifecycle events and metadata-only tool activity use the same dispatcher.
 
 **Important**: The hook script column shows the *convention*. The dispatcher discovers and runs **all** scripts in the hooks directory for **every** event — there is no per-event filename matching at the dispatcher level. To get per-event behavior, either (a) keep only the relevant script in the directory, or (b) check `$ACP_HOOK_EVENT` inside your script and exit early for non-matching events.
 
@@ -61,10 +70,76 @@ All 9 events implemented (delegate-model only, LD14).
 | `session_failed` | SessionManager.remove() (error) | `on_session_failed` |
 | `session_idle` | HealthMonitor detects stale | `on_session_idle` |
 | `subagent_start` | adapter.prompt() begins (per-turn) | `on_subagent_start` |
-| `subagent_stop` | adapter.prompt() returns (per-turn) | `on_subagent_stop` |
+| `subagent_stop` | Bounded prompt settles, including error/cancel (per-turn) | `on_subagent_stop` |
 | `task_assigned` | WorkerDispatcher dispatchOnce() | `on_task_assigned` |
 | `task_completed` | Task transitions to completed | `on_task_completed` |
 | `task_failed` | Task transitions to failed | `on_task_failed` |
+| `spawn_completed` | Long-lived async spawn response (initial turn only) | `on_spawn_completed` |
+| `tool_call` | Native ACP tool call notification | `on_tool_call` |
+| `tool_call_update` | Native ACP tool update notification | `on_tool_call_update` |
+
+### Native telemetry contract (context version 1, additive)
+
+Consumers such as `pi-coucou/acp/coucou.mjs` should use `session.id` (native ACP
+session ID), `session.cwd`, `session.agent`, `agent.name`, `event`, `timestamp`,
+and the optional metadata below. `agent.name` identifies the configured profile;
+ACP does not supply an additional agent-instance ID.
+
+- Every extension-orchestrated prompt emits `subagent_start`, then exactly one `subagent_stop`
+  **at the orchestration timeout/abort boundary**, not when a late RPC resolves.
+  This covers sync/async spawn, worker dispatch/messages, live/reopened session
+  messages, tracked-spawn resume, and coordinator delegate/fanout/DAG paths.
+- `turn.outcome` is authoritative. `success` means a recognized protocol
+  completion (`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`), **not**
+  proof of task success. `error` covers rejected prompts/timeouts and explicit
+  `error`/`failed` reasons. `cancelled` covers `AbortError` and
+  `cancelled`/`canceled`/`aborted` reasons. Missing/unrecognized reasons are
+  `unknown`; consumers must not infer success (use interruption/unknown).
+- `turn.stopReason` preserves the reported reason; rejected operations use only
+  `error` or `cancelled`, never exception text. No reply, prompt, or summary is
+  added to `turn`. Legacy `task.result` retains the reason (and the existing
+  reply excerpt on `spawn_completed`) for wake compatibility. Its corresponding
+  status is `completed`, `failed`, `cancelled`, or `unknown`.
+- A long-lived async spawn also emits `spawn_completed` on a returned response,
+  with the **same** turn metadata as `subagent_stop`. There is no additional
+  unqualified stop in a `finally` block. Rejections retain session-failure wake
+  signaling for errors, but not for cancellation. Session removal events mean
+  resource lifecycle, not turn success: never use `session_completed` to erase a
+  turn's failure/interruption.
+- Tool events contain only `tool.id`, optional `tool.name`, optional
+  `tool.status`, and the standard envelope. There is **no task**, input, output,
+  content, location, title, or arbitrary `_meta` data. They cannot invoke the
+  dispatcher's task failure policy and do not affect permission handling.
+  `tool_call` indicates a native call notification; `tool_call_update` carries
+  updates. `pending`/`in_progress` indicate activity, `completed`/`failed` end
+  the tool activity (not the agent turn); absent status is unknown, not success.
+- The current ACP SDK has no standard machine tool-name field. Only an explicit
+  top-level `name` matching `[a-zA-Z0-9_.:/-]{1,128}` is admitted when available.
+  Never parse human-readable `title` or `_meta` to invent a name; use a generic
+  `Tool` label if absent. ACPX CLI mode does not stream native tool notifications.
+- Native dispatch serializes advisory telemetry FIFO per nonempty `session.id`:
+  `session_started`, `session_idle`, `session_completed`, `session_failed`,
+  `subagent_start`, `subagent_stop`, `spawn_completed`, `tool_call` and
+  `tool_call_update`. Each entire pre/file/socket/post/failure-policy pipeline
+  settles before the next begins, so delayed start/tool scripts cannot overtake
+  terminal delivery. Scripts and targets within one event still run in parallel;
+  different sessions, empty session IDs and task hooks remain independent.
+  Prompt execution never awaits this delivery lane.
+- Each session admits at most **128 outstanding tool events** (running plus
+  queued); additional incoming tool events return `skipped: true` with
+  `skippedReason: "session-tool-queue-full"`, without invoking failure policy.
+  Lifecycle events, including terminals, are never dropped by this queue.
+  Consequently tool backlog is bounded, but arbitrary lifecycle bursts are not
+  strictly memory-bounded. Idle lanes are removed. Existing file-hook timeouts,
+  suppression, enablement and failure policy are unchanged; a stalled extension
+  handler/publisher can still stall its session's lane.
+- Delivery remains advisory, not exactly-once or durable. FIFO covers local
+  dispatch invocation order and awaited hook completion, not detached work a
+  script starts, socket reconnect replay, or late native notifications emitted
+  after a terminal event. Consumers should still use source timestamps to reject
+  stale activity. Tool hooks are not NEVER_DROP wake events. Forward only the
+  whitelisted metadata to monitoring: the **legacy full hook context** may still
+  include conversation excerpts in task/wake events.
 
 ### Hook script resolution (LD1)
 

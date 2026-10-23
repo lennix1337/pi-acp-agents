@@ -7,7 +7,7 @@
  *
  * No provider-specific features — pure ACP protocol compliance.
  */
-import { AcpAgentAdapter } from "./base.js";
+import { AcpAgentAdapter, type AcpAdapterOptions } from "./base.js";
 import type { AcpAgentConfig } from "../config/types.js";
 import type { Logger } from "../logger.js";
 import { createNoopLogger } from "../logger.js";
@@ -15,7 +15,7 @@ import { execSync } from "node:child_process";
 
 const log = createNoopLogger();
 
-export interface CodexAdapterOptions {
+export interface CodexAdapterOptions extends Pick<AcpAdapterOptions, "onActivity" | "onSessionUpdate"> {
 	config?: Partial<AcpAgentConfig>;
 	clientInfo?: { name: string; version: string };
 	logger?: Logger;
@@ -33,6 +33,8 @@ export class CodexAcpAdapter extends AcpAgentAdapter {
 			clientInfo: opts.clientInfo,
 			logger: opts.logger,
 			cwd: opts.cwd,
+			onActivity: opts.onActivity,
+			onSessionUpdate: opts.onSessionUpdate,
 		});
 	}
 

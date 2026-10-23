@@ -94,6 +94,18 @@ export interface DispatchArgs {
 }
 
 const DEFAULT_TIMEOUT_MS = 5000;
+const MAX_OUTSTANDING_TOOLS_PER_SESSION = 128;
+/** Only advisory session telemetry is serialized; task/policy dispatch stays independent. */
+const SESSION_TELEMETRY_EVENTS: ReadonlySet<HookEventName> = new Set([
+	"session_started", "session_idle", "session_completed", "session_failed",
+	"subagent_start", "subagent_stop", "spawn_completed", "tool_call", "tool_call_update",
+]);
+
+interface SessionDeliveryQueue {
+	tail: Promise<void>;
+	outstandingTools: number;
+}
+
 const SCRIPT_EXTENSIONS: ReadonlySet<string> = new Set([
 	".sh",
 	".ps1",
@@ -173,6 +185,7 @@ export class HookDispatcher {
 
 	private readonly preHooks = new Map<HookEventName, HookHandler[]>();
 	private readonly postHooks = new Map<HookEventName, HookHandler[]>();
+	private readonly sessionQueues = new Map<string, SessionDeliveryQueue>();
 
 	/** Reentrancy guard: when enabled, tracks in-flight (event,correlationId) keys. */
 	private readonly enableReentrancyGuard: boolean;
@@ -243,12 +256,45 @@ export class HookDispatcher {
 		}
 
 		try {
-			return await this.runPipeline(event, context);
+			return await (context.session.id && SESSION_TELEMETRY_EVENTS.has(event)
+				? this.enqueueSessionDelivery(event, context)
+				: this.runPipeline(event, context));
 		} finally {
 			if (this.enableReentrancyGuard) {
 				this.inFlightKeys.delete(guardKey);
 			}
 		}
+	}
+
+	/**
+	 * FIFO across the entire pipeline, including subprocess completion and policy.
+	 * Producers need not await dispatch. Noisy tool metadata is capped; lifecycle
+	 * events are retained, so arbitrary lifecycle bursts are not memory-bounded.
+	 */
+	private enqueueSessionDelivery(event: HookEventName, context: HookContext): Promise<DispatchResult> {
+		const sessionId = context.session.id;
+		let queue = this.sessionQueues.get(sessionId);
+		if (!queue) {
+			queue = { tail: Promise.resolve(), outstandingTools: 0 };
+			this.sessionQueues.set(sessionId, queue);
+		}
+		const isTool = event === "tool_call" || event === "tool_call_update";
+		if (isTool && queue.outstandingTools >= MAX_OUTSTANDING_TOOLS_PER_SESSION) {
+			return Promise.resolve({
+				fileResults: [], blocked: false, hasFailures: false, policyApplied: false,
+				skipped: true, skippedReason: "session-tool-queue-full",
+			});
+		}
+		if (isTool) queue.outstandingTools++;
+		const delivery = queue.tail.then(() => this.runPipeline(event, context));
+		const release = () => {
+			if (isTool) queue.outstandingTools--;
+			if (queue.tail === tail) this.sessionQueues.delete(sessionId);
+		};
+		// A rejected pipeline must release the lane too, without an unhandled tail rejection.
+		const tail = delivery.then(release, release);
+		queue.tail = tail;
+		return delivery;
 	}
 
 	/** Internal 3-phase pipeline (called under the reentrancy guard). */

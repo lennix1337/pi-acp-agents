@@ -5,6 +5,8 @@
  * across multiple ACP agents. Each operation creates isolated adapter
  * instances that are disposed after use.
  */
+import { promptWithTelemetry } from "../hooks/prompt-telemetry.js";
+import type { HookTriggerManager } from "../hooks/trigger-wiring.js";
 import { createAdapter } from "../adapter-factory.js";
 import { AliasResolver } from "./alias-resolver.js";
 import type { AcpConfig, AcpPromptResult } from "../config/types.js";
@@ -48,6 +50,7 @@ export interface ComparisonResult {
 }
 
 export interface AgentCoordinatorDeps {
+  hookTriggers?: Pick<HookTriggerManager, "onSubagentStart" | "onSubagentStop" | "onSessionAdded" | "onToolActivity">;
   /** Check if a specific agent's circuit breaker is healthy */
   isHealthyFn?: (agentName: string) => boolean;
   /** Record success/failure for circuit breaker tracking */
@@ -71,6 +74,7 @@ export class AgentCoordinator {
   private isHealthyFn: (agentName: string) => boolean;
   private recordSuccessFn?: (agentName: string) => void;
   private recordFailureFn?: (agentName: string) => void;
+  private hookTriggers?: AgentCoordinatorDeps["hookTriggers"];
   private adapterPool = new Map<string, PooledAdapterEntry>();
 
   constructor(
@@ -78,6 +82,7 @@ export class AgentCoordinator {
     private cwd: string,
     deps?: AgentCoordinatorDeps,
   ) {
+    this.hookTriggers = deps?.hookTriggers;
     this.isHealthyFn = deps?.isHealthyFn ?? (() => true);
     this.recordSuccessFn = deps?.recordSuccessFn;
     this.recordFailureFn = deps?.recordFailureFn;
@@ -186,7 +191,13 @@ export class AgentCoordinator {
     const agentCfg = this.config.agent_servers[agentName];
     if (!agentCfg) throw new Error(`Agent "${agentName}" not found`);
     const effectiveCwd = cwd ?? this.cwd;
-    const adapter = createAdapter(agentName, agentCfg, this.config, effectiveCwd);
+    const adapter = this.hookTriggers
+      ? createAdapter(agentName, agentCfg, this.config, effectiveCwd, {
+          onSessionUpdate: (sessionId, update) => {
+            this.hookTriggers?.onToolActivity({ sessionId, agentName, cwd: effectiveCwd }, update).catch(() => {});
+          },
+        })
+      : createAdapter(agentName, agentCfg, this.config, effectiveCwd);
 
     await withTimeoutMs(
       adapter.spawn(),
@@ -194,7 +205,8 @@ export class AgentCoordinator {
       `acp_spawn(delegate:${agentName})`,
     );
     await adapter.initialize();
-    await adapter.newSession(effectiveCwd);
+    const sessionId = await adapter.newSession(effectiveCwd);
+    this.hookTriggers?.onSessionAdded({ id: sessionId, agent: agentName, cwd: effectiveCwd }).catch(() => {});
 
     return adapter;
   }
@@ -278,9 +290,15 @@ export class AgentCoordinator {
 
       emitProgress("prompting");
       try {
-        const promptPromise = adapter.prompt(message);
-        promptPromise.catch(() => {});
-        return await Promise.race([promptPromise, abortPromise]);
+        return await promptWithTelemetry(this.hookTriggers, {
+          sessionId: adapter.getSessionId?.() ?? "",
+          agentName,
+          cwd: cwd ?? this.cwd,
+        }, () => {
+          const promptPromise = adapter.prompt(message);
+          promptPromise.catch(() => {});
+          return Promise.race([promptPromise, abortPromise]);
+        });
       } finally {
         releaseLock();
       }

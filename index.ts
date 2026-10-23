@@ -39,6 +39,7 @@ import { loadSettings, isToolEnabled, type AcpToolSettings } from "./src/setting
 import { configureToolSettings } from "./src/settings/configure-tui.js";
 import { HookDispatcher } from "./src/hooks/dispatcher.js";
 import { FailurePolicyEngine } from "./src/hooks/policy.js";
+import { promptWithTelemetry, turnFromStopReason, turnFromError } from "./src/hooks/prompt-telemetry.js";
 import { HookTriggerManager } from "./src/hooks/trigger-wiring.js";
 import { SocketPublisher } from "./src/hooks/socket-bus.js";
 import { WakeSubscriber } from "./src/hooks/wake-subscriber.js";
@@ -136,6 +137,7 @@ export default function (pi: ExtensionAPI) {
     onSubagentStart(_s: unknown): Promise<void> { return Promise.resolve(); },
     onSubagentStop(_s: unknown): Promise<void> { return Promise.resolve(); },
     onSpawnCompleted(_s: unknown): Promise<void> { return Promise.resolve(); },
+    onToolActivity(_s: unknown, _u: unknown): Promise<void> { return Promise.resolve(); },
     dispose(): void { /* noop */ },
   };
 
@@ -287,7 +289,7 @@ export default function (pi: ExtensionAPI) {
   let sharedAsyncExecutor: AsyncExecutor | null = null;
   function getSharedAsyncExecutor(): AsyncExecutor {
     if (!sharedAsyncExecutor) {
-      const coordinator = new AgentCoordinator(loadConfig(), process.cwd(), {});
+      const coordinator = new AgentCoordinator(loadConfig(), process.cwd(), { hookTriggers });
       sharedAsyncExecutor = new AsyncExecutor(coordinator, runtimePaths.rootDir, {
         onWakeNotification: (runId, info) => {
           // Wake notification callback — surfaces silent-failure to the parent session
@@ -351,6 +353,7 @@ export default function (pi: ExtensionAPI) {
         isHealthyFn: (name) => cb.isHealthy(name),
         recordSuccessFn: (name) => cb.recordSuccess(name),
         recordFailureFn: (name) => cb.recordFailure(name),
+        hookTriggers,
       });
       const resumeAsyncExecutor = new AsyncExecutor(resumeCoordinator, runtimePaths.rootDir);
       const resumeExecutor = new DagExecutor({
@@ -615,13 +618,15 @@ export default function (pi: ExtensionAPI) {
         const start = Date.now();
         // ACP Hooks: fire task_assigned (fire-and-forget)
         hookTriggers.onTaskDispatched({ id: sessionId, subject: prompt.slice(0, 200), status: "assigned", owner: workerName }).catch(() => {});
-        // ACP Hooks: fire subagent_start (fire-and-forget)
-        hookTriggers.onSubagentStart({ sessionId, agentName: workerName }).catch(() => {});
         try {
           busySessions.set(sessionId, true);
-          const result = (await withTimeoutMs(adapter.prompt(prompt), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `dispatch:${sessionId}`)) as AcpPromptResult;
+          const result = await promptWithTelemetry(
+            hookTriggers,
+            { sessionId, agentName: sessionMgr.get(sessionId)?.agentName ?? safeWorkerGet(workerName)?.agentName ?? workerName, cwd: sessionMgr.get(sessionId)?.cwd },
+            () => withTimeoutMs(adapter.prompt(prompt), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `dispatch:${sessionId}`),
+          );
           // ACP Hooks: fire task_completed (fire-and-forget)
-          hookTriggers.onTaskResult({ taskId: sessionId, subject: prompt.slice(0, 200), success: true, durationMs: Date.now() - start, result: result.text, owner: workerName }).catch(() => {});
+          hookTriggers.onTaskResult({ taskId: sessionId, subject: prompt.slice(0, 200), success: turnFromStopReason(result.stopReason).outcome === "success", durationMs: Date.now() - start, result: result.text, owner: workerName }).catch(() => {});
           return { ok: true, value: result.text };
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -630,8 +635,6 @@ export default function (pi: ExtensionAPI) {
           return { ok: false, error: errMsg };
         } finally {
           busySessions.delete(sessionId);
-          // ACP Hooks: fire subagent_stop (fire-and-forget)
-          hookTriggers.onSubagentStop({ sessionId, agentName: workerName }).catch(() => {});
         }
       },
     };
@@ -998,6 +1001,7 @@ export default function (pi: ExtensionAPI) {
           },
           onSessionUpdate: (sid, update) => {
             heartbeatConsumer(sid, update);
+            hookTriggers.onToolActivity({ sessionId: sid, agentName, cwd: effectiveCwd }, update).catch(() => {});
             // A new `tool_call` is one tool step of the tracked run.
             if (update.sessionUpdate === "tool_call" && asyncRunId && asyncExecutor) {
               try { asyncExecutor.reportTrackedToolCall(asyncRunId); } catch { /* best-effort */ }
@@ -1052,8 +1056,6 @@ export default function (pi: ExtensionAPI) {
             handle.promptStartedAt = new Date();
             monitor.markPromptStart(sessionId);
             archiveSession(handle);
-            // ACP Hooks: fire subagent_start (fire-and-forget)
-            hookTriggers.onSubagentStart({ sessionId, agentName, cwd: effectiveCwd }).catch(() => {});
 
             // ── Async spawn default (OT4) ──
             // Async-by-default is now config-driven (CA-3): config.spawns.asyncDefault
@@ -1100,7 +1102,11 @@ export default function (pi: ExtensionAPI) {
                   cancel: () => { try { adapter.cancel?.(); } catch { /* best-effort */ } },
                   reprompt: async (msg: string) => {
                     try {
-                      const pr = (await withTimeoutMs(adapter.prompt(msg), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_spawn(resume:${sessionId})`)) as AcpPromptResult;
+                      const pr = await promptWithTelemetry(
+                        hookTriggers,
+                        { sessionId, agentName, cwd: effectiveCwd },
+                        () => withTimeoutMs(adapter.prompt(msg), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_spawn(resume:${sessionId})`),
+                      );
                       return { text: pr.text };
                     } catch (resumeErr) { const errMsg = resumeErr instanceof Error ? resumeErr.message : String(resumeErr); throw new Error(errMsg); }
                   },
@@ -1118,7 +1124,11 @@ export default function (pi: ExtensionAPI) {
               const bgPromise = (async () => {
                 const promptTimeoutMs = config.toolTimeouts?.prompt ?? config.stallTimeoutMs;
                 try {
-                  const pr = (await withTimeoutMs(adapter.prompt(effectivePrompt), promptTimeoutMs, `acp_spawn(prompt:${sessionId})`)) as AcpPromptResult;
+                  const pr = await promptWithTelemetry(
+                    hookTriggers,
+                    { sessionId, agentName, cwd: effectiveCwd },
+                    () => withTimeoutMs(adapter.prompt(effectivePrompt), promptTimeoutMs, `acp_spawn(prompt:${sessionId})`),
+                  );
                   markPromptLifecycle(bgHandle, pr);
                   if (asyncRunId && asyncExecutor) { try { asyncExecutor.completeTrackedSpawn(asyncRunId, { text: pr.text }); } catch { /* best-effort */ } }
                   if (oneShot) {
@@ -1128,6 +1138,7 @@ export default function (pi: ExtensionAPI) {
                     hookTriggers.onSpawnCompleted({
                       sessionId, agentName, cwd: effectiveCwd,
                       stopReason: pr.stopReason,
+                      turn: turnFromStopReason(pr.stopReason),
                       summary: pr.text.replace(/\s+/g, " ").trim().slice(0, 300) || undefined,
                     }).catch(() => {});
                   }
@@ -1137,8 +1148,8 @@ export default function (pi: ExtensionAPI) {
                   eventLog.append("operation_error", { label: `acp_spawn(prompt:${sessionId}):error`, error: errMsg });
                   if (asyncRunId && asyncExecutor) { try { asyncExecutor.failTrackedSpawn(asyncRunId, errMsg); } catch { /* best-effort */ } }
                   if (oneShot) {
-                    await closeSession(bgHandle, "error").catch(() => {});
-                  } else {
+                    await closeSession(bgHandle, turnFromError(bgErr).outcome === "cancelled" ? "cancelled" : "error").catch(() => {});
+                  } else if (turnFromError(bgErr).outcome !== "cancelled") {
                     hookTriggers.onSessionRemoved({ id: sessionId, agent: agentName, cwd: effectiveCwd }, { error: true, errorMessage: errMsg }).catch(() => {});
                   }
                 } finally {
@@ -1148,7 +1159,6 @@ export default function (pi: ExtensionAPI) {
                   monitor.markPromptEnd(sessionId);
                   archiveSession(bgHandle);
                   pendingAsyncSpawns.delete(sessionId);
-                  hookTriggers.onSubagentStop({ sessionId, agentName, cwd: effectiveCwd }).catch(() => {});
                 }
               })();
               pendingAsyncSpawns.set(sessionId, { sessionId, agentName, handle: bgHandle, promise: bgPromise });
@@ -1158,7 +1168,11 @@ export default function (pi: ExtensionAPI) {
 
             // ── Sync (legacy) path: async:false → block on prompt ──
             try {
-              const pr = (await withTimeoutMs(adapter.prompt(effectivePrompt), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_spawn(prompt:${sessionId})`)) as AcpPromptResult;
+              const pr = await promptWithTelemetry(
+                hookTriggers,
+                { sessionId, agentName, cwd: effectiveCwd },
+                () => withTimeoutMs(adapter.prompt(effectivePrompt), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_spawn(prompt:${sessionId})`),
+              );
               markPromptLifecycle(handle, pr);
               promptText = pr.text;
             } finally {
@@ -1167,8 +1181,6 @@ export default function (pi: ExtensionAPI) {
               handle.isPrompting = false;
               monitor.markPromptEnd(sessionId);
               archiveSession(handle);
-              // ACP Hooks: fire subagent_stop (fire-and-forget)
-              hookTriggers.onSubagentStop({ sessionId, agentName, cwd: effectiveCwd }).catch(() => {});
             }
           }
 
@@ -1179,7 +1191,7 @@ export default function (pi: ExtensionAPI) {
           return { sessionId, sessionName: handle.sessionName, agent: agentName, oneShot, worker: isWorker, text: promptText, worktreePath, keepWorktree: params.keepWorktree ?? false, warnings: personaWarnings.length > 0 ? personaWarnings : undefined };
         } catch (err) {
           if (handle) {
-            await closeSession(handle, "error");
+            await closeSession(handle, turnFromError(err).outcome === "cancelled" ? "cancelled" : "error");
           } else {
             adapter.dispose();
           }
@@ -1312,15 +1324,15 @@ export default function (pi: ExtensionAPI) {
         const adapter = activeAdapters.get(sessionId);
         if (adapter) {
           busySessions.set(sessionId, true);
-          // ACP Hooks: fire subagent_start (fire-and-forget)
-          hookTriggers.onSubagentStart({ sessionId, agentName: worker.agentName }).catch(() => {});
           try {
-            const pr = (await withTimeoutMs(adapter.prompt(message), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_msg(worker:${sessionId})`)) as AcpPromptResult;
+            const pr = await promptWithTelemetry(
+              hookTriggers,
+              { sessionId, agentName: worker.agentName, cwd: sessionMgr.get(sessionId)?.cwd },
+              () => withTimeoutMs(adapter.prompt(message), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_msg(worker:${sessionId})`),
+            );
             return { content: [textContent(pr.text || "(no response)")], details: { sessionId, name: target, agent: worker.agentName, queued: false } };
           } finally {
             busySessions.delete(sessionId);
-            // ACP Hooks: fire subagent_stop (fire-and-forget)
-            hookTriggers.onSubagentStop({ sessionId, agentName: worker.agentName }).catch(() => {});
           }
         }
       }
@@ -1368,11 +1380,13 @@ export default function (pi: ExtensionAPI) {
           liveHandle.promptStartedAt = new Date();
           monitor.markPromptStart(sessionId);
           archiveSession(liveHandle);
-          // ACP Hooks: fire subagent_start (fire-and-forget)
-          hookTriggers.onSubagentStart({ sessionId, agentName: liveHandle.agentName, cwd: liveHandle.cwd }).catch(() => {});
           try {
             const adapter = activeAdapters.get(sessionId)!;
-            const pr = (await withTimeoutMs(adapter.prompt(message), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_msg(reused:${sessionId})`)) as AcpPromptResult;
+            const pr = await promptWithTelemetry(
+              hookTriggers,
+              { sessionId, agentName: liveHandle.agentName, cwd: liveHandle.cwd },
+              () => withTimeoutMs(adapter.prompt(message), config.toolTimeouts?.prompt ?? config.stallTimeoutMs, `acp_msg(reused:${sessionId})`),
+            );
             markPromptLifecycle(liveHandle, pr);
             eventLog.append("msg_reused_session", { sessionId, sessionName: liveHandle.sessionName });
             return pr;
@@ -1382,8 +1396,6 @@ export default function (pi: ExtensionAPI) {
             liveHandle.isPrompting = false;
             monitor.markPromptEnd(sessionId);
             archiveSession(liveHandle);
-            // ACP Hooks: fire subagent_stop (fire-and-forget)
-            hookTriggers.onSubagentStop({ sessionId, agentName: liveHandle.agentName, cwd: liveHandle.cwd }).catch(() => {});
           }
         }, `acp_msg(reused:${sessionId})`);
         refreshWidget(ctx);
@@ -1412,7 +1424,10 @@ export default function (pi: ExtensionAPI) {
         const effectiveCwd = params.cwd ?? resolved.metadata?.cwd ?? ctx.cwd;
         const adapter = createAdapter(agentName, agentCfg, config, effectiveCwd, {
           onActivity: (sid) => monitor.touch(sid),
-          onSessionUpdate: heartbeatConsumer,
+          onSessionUpdate: (sid, update) => {
+            heartbeatConsumer(sid, update);
+            hookTriggers.onToolActivity({ sessionId: sid, agentName, cwd: effectiveCwd }, update).catch(() => {});
+          },
         });
         let handle: AcpSessionHandle | undefined;
         try {
@@ -1462,10 +1477,12 @@ export default function (pi: ExtensionAPI) {
           handle.promptStartedAt = new Date();
           monitor.markPromptStart(newSessionId);
           archiveSession(handle);
-          // ACP Hooks: fire subagent_start (fire-and-forget)
-          hookTriggers.onSubagentStart({ sessionId: newSessionId, agentName, cwd: effectiveCwd }).catch(() => {});
           try {
-            const pr = (await withTimeoutMs(adapter.prompt(message), config.toolTimeouts?.prompt ?? config.staleTimeoutMs, `acp_msg(prompt:${newSessionId})`)) as AcpPromptResult;
+            const pr = await promptWithTelemetry(
+              hookTriggers,
+              { sessionId: newSessionId, agentName, cwd: effectiveCwd },
+              () => withTimeoutMs(adapter.prompt(message), config.toolTimeouts?.prompt ?? config.staleTimeoutMs, `acp_msg(prompt:${newSessionId})`),
+            );
             if (warningPrefix) pr.text = `${warningPrefix}${pr.text}`;
             markPromptLifecycle(handle, pr);
             eventLog.append("msg_prompt", { sessionId: newSessionId, sessionName: handle.sessionName });
@@ -1476,12 +1493,10 @@ export default function (pi: ExtensionAPI) {
             handle.isPrompting = false;
             monitor.markPromptEnd(newSessionId);
             archiveSession(handle);
-            // ACP Hooks: fire subagent_stop (fire-and-forget)
-            hookTriggers.onSubagentStop({ sessionId: newSessionId, agentName, cwd: effectiveCwd }).catch(() => {});
           }
         } catch (err) {
           if (handle) {
-            await closeSession(handle, "error");
+            await closeSession(handle, turnFromError(err).outcome === "cancelled" ? "cancelled" : "error");
           } else {
             adapter.dispose();
           }
@@ -1764,6 +1779,7 @@ ${lines.join("\n")}` : "No active async runs")],
         isHealthyFn: (name) => cb.isHealthy(name),
         recordSuccessFn: (name) => cb.recordSuccess(name),
         recordFailureFn: (name) => cb.recordFailure(name),
+        hookTriggers,
       });
       try {
       if (params.compare) {
@@ -2258,6 +2274,7 @@ ${lines.join("\n")}` : "No active async runs")],
           isHealthyFn: (name) => cb.isHealthy(name),
           recordSuccessFn: (name) => cb.recordSuccess(name),
           recordFailureFn: (name) => cb.recordFailure(name),
+          hookTriggers,
         });
         const asyncExecutor = new AsyncExecutor(coordinator, runtimePaths.rootDir);
         const dagExecutor = new DagExecutor({
@@ -2330,6 +2347,7 @@ ${lines.join("\n")}` : "No active async runs")],
           isHealthyFn: (name) => cb.isHealthy(name),
           recordSuccessFn: (name) => cb.recordSuccess(name),
           recordFailureFn: (name) => cb.recordFailure(name),
+          hookTriggers,
         });
         const asyncExecutor = new AsyncExecutor(coordinator, runtimePaths.rootDir);
         const dagExecutor = new DagExecutor({

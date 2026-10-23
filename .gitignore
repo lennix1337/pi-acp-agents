@@ -21,6 +21,7 @@ bun.lock
 bunfig.toml
 
 # Dev artifacts
+/scratchpad/
 .verify-iteration*.md
 _pi_ralph_*.md
 .worktrees/

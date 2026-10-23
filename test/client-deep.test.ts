@@ -269,6 +269,16 @@ describe("AcpClient — deep branches", () => {
 			expect(result.stopReason).toBe("end_turn");
 		});
 
+		it.each(["max_tokens", "max_turn_requests", "refusal", "future_reason"])("preserves native stopReason %s", async (stopReason) => {
+			const client = createClient();
+			await client.connect();
+			const conn = (client as any).conn;
+			conn.initialize.mockResolvedValueOnce({ protocolVersion: 1, agentInfo: { name: "test" } });
+			conn.newSession.mockResolvedValueOnce({ sessionId: "sess-native", models: {}, modes: {} });
+			conn.prompt.mockResolvedValueOnce({ stopReason });
+			expect((await client.quickPrompt("hello")).stopReason).toBe(stopReason);
+		});
+
 		it("maps cancelled stopReason", async () => {
 			const client = createClient();
 			await client.connect();

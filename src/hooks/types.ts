@@ -3,7 +3,7 @@
  *
  * Source of truth: flow/plans/acp-hooks-impl-spec.md
  *
- * All 10 events (LD8 + spawn_completed): session_started, session_completed,
+ * Lifecycle and metadata-only tool events: session_started, session_completed,
  * session_failed, session_idle, subagent_start, subagent_stop,
  * task_assigned, task_completed, task_failed, spawn_completed.
  *
@@ -12,7 +12,7 @@
  * EVERY turn) to avoid flooding the main session under per-turn completion.
  */
 
-/** The 10 hook events ACP implements (LD8 + spawn_completed for async). */
+/** Hook events dispatched through file, socket and extension hooks. */
 export type HookEventName =
 	| "session_started"
 	| "session_completed"
@@ -23,7 +23,9 @@ export type HookEventName =
 	| "task_assigned"
 	| "task_completed"
 	| "task_failed"
-	| "spawn_completed";
+	| "spawn_completed"
+	| "tool_call"
+	| "tool_call_update";
 
 /** Failure actions applied by the policy engine (policy.ts). */
 export type FailureAction =
@@ -39,6 +41,19 @@ export type FollowupOwner = "member" | "lead" | "none";
 export interface HookEventConfig {
 	enabled: boolean;
 	timeoutMs: number;
+}
+
+/** Metadata only; success means a recognized protocol completion, not task success. */
+export interface TurnMetadata {
+	outcome: "success" | "error" | "cancelled" | "unknown";
+	stopReason?: string;
+}
+
+export interface ToolMetadata {
+	id: string;
+	/** Explicit native identifier only, never the human-readable ACP title. */
+	name?: string;
+	status?: "pending" | "in_progress" | "completed" | "failed";
 }
 
 /**
@@ -60,6 +75,8 @@ export interface HookContext {
 		result?: string;
 		durationMs?: number;
 	};
+	turn?: TurnMetadata;
+	tool?: ToolMetadata;
 	team?: { id: string; leadName: string };
 	/** ISO 8601 timestamp. */
 	timestamp: string;

@@ -8,10 +8,13 @@
  *
  * Source of truth: flow/plans/acp-hooks-impl-spec.md (Wiring section).
  */
+import { turnFromStopReason } from "./prompt-telemetry.js";
 import { buildHookContext } from "./hook-context.js";
 import type {
 	HookContext,
 	HookEventName,
+	TurnMetadata,
+	ToolMetadata,
 } from "./types.js";
 
 /** Minimal dispatcher interface the trigger manager depends on. */
@@ -61,6 +64,7 @@ export interface SubagentStopLike {
 	sessionId: string;
 	agentName: string;
 	stopReason?: string;
+	turn?: TurnMetadata;
 	/** Short excerpt of the agent's reply, surfaced in the wake message. */
 	summary?: string;
 	cwd?: string;
@@ -91,10 +95,18 @@ function safeFire(
 	event: HookEventName,
 	context: HookContext,
 ): Promise<void> {
-	return Promise.resolve(dispatcher.fire(event, context)).then(
-		() => undefined,
-		() => undefined,
-	);
+	try {
+		return Promise.resolve(dispatcher.fire(event, context)).then(
+			() => undefined,
+			() => undefined,
+		);
+	} catch { // Advisory hooks must not fail the lifecycle operation on a synchronous throw.
+		return Promise.resolve();
+	}
+}
+
+function terminalTaskStatus(turn: TurnMetadata): string {
+	return turn.outcome === "success" ? "completed" : turn.outcome === "error" ? "failed" : turn.outcome;
 }
 
 /**
@@ -286,7 +298,7 @@ export class HookTriggerManager {
 		const task = {
 			id: result.sessionId,
 			subject: "subagent turn",
-			status: "completed",
+			status: terminalTaskStatus(result.turn ?? turnFromStopReason(result.stopReason)),
 			result: result.stopReason,
 		};
 		return safeFire(
@@ -303,6 +315,7 @@ export class HookTriggerManager {
 					name: result.agentName,
 					type: this.defaultAgentType,
 				},
+				turn: result.turn ?? turnFromStopReason(result.stopReason),
 				task,
 			}),
 		);
@@ -319,9 +332,9 @@ export class HookTriggerManager {
 		const task = {
 			id: result.sessionId,
 			subject: "spawn",
-			status: "completed",
+			status: terminalTaskStatus(result.turn ?? turnFromStopReason(result.stopReason)),
 			result: result.summary
-				? `${result.stopReason ?? "done"}: ${result.summary}`
+				? `${result.stopReason ?? "unknown"}: ${result.summary}`
 				: result.stopReason,
 		};
 		return safeFire(
@@ -338,9 +351,26 @@ export class HookTriggerManager {
 					name: result.agentName,
 					type: this.defaultAgentType,
 				},
+				turn: result.turn ?? turnFromStopReason(result.stopReason),
 				task,
 			}),
 		);
+	}
+
+	/** Whitelist native metadata. Tool titles, input, output and arbitrary _meta are never copied. */
+	onToolActivity(identity: SubagentStartLike, update: import("@agentclientprotocol/sdk").SessionUpdate): Promise<void> {
+		if (this.disposed || (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update")) return Promise.resolve();
+		if (typeof update.toolCallId !== "string" || !update.toolCallId) return Promise.resolve();
+		const tool: ToolMetadata = { id: update.toolCallId };
+		const name = (update as unknown as { name?: unknown }).name;
+		if (typeof name === "string" && /^[a-zA-Z0-9_.:/-]{1,128}$/.test(name)) tool.name = name;
+		if (update.status === "pending" || update.status === "in_progress" || update.status === "completed" || update.status === "failed") tool.status = update.status;
+		return safeFire(this.dispatcher, update.sessionUpdate, buildHookContext({
+			event: update.sessionUpdate,
+			session: { id: identity.sessionId, agent: identity.agentName, cwd: identity.cwd ?? this.defaultCwd },
+			agent: { name: identity.agentName, type: this.defaultAgentType },
+			tool,
+		}));
 	}
 
 	/** Stop firing hooks. After dispose, all callbacks become no-ops. */

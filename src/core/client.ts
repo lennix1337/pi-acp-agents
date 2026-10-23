@@ -633,7 +633,7 @@ export class AcpClient {
 		const result = await this.prompt(message);
 		return {
 			text: result.text,
-			stopReason: result.stopReason === "cancelled" ? "cancelled" : "end_turn",
+			stopReason: result.stopReason,
 			sessionId: this._sessionId!,
 		};
 	}

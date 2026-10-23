@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import type { HookContext, HookEventName } from "./types.js";
+import type { HookContext, HookEventName, TurnMetadata, ToolMetadata } from "./types.js";
 
 export interface BuildHookContextParams {
 	event: HookEventName;
@@ -20,6 +20,8 @@ export interface BuildHookContextParams {
 		result?: string;
 		durationMs?: number;
 	};
+	turn?: TurnMetadata;
+	tool?: ToolMetadata;
 	team?: { id: string; leadName: string };
 }
 
@@ -39,6 +41,8 @@ export function buildHookContext(params: BuildHookContextParams): HookContext {
 	if (params.task !== undefined) {
 		ctx.task = params.task;
 	}
+	if (params.turn !== undefined) ctx.turn = params.turn;
+	if (params.tool !== undefined) ctx.tool = params.tool;
 	if (params.team !== undefined) {
 		ctx.team = params.team;
 	}
