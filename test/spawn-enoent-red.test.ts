@@ -134,6 +134,18 @@ function captureUncaught(): [
 	];
 }
 
+/**
+ * Where a missing binary surfaces depends on the platform. POSIX delivers the
+ * spawn ENOENT before connect() returns. On Windows the command runs through
+ * cmd.exe (shell: true), which starts fine and exits right after, so
+ * connect() resolves and the failure is reported by the next call, initialize().
+ * Either way the caller gets a classified rejection and nothing crashes.
+ */
+async function connectAndHandshake(client: AcpClient): Promise<void> {
+	await client.connect();
+	if (process.platform === "win32") await client.initialize();
+}
+
 describe("RED: spawn ENOENT must not crash pi", () => {
 	it("connect() rejects (does not crash) when binary is missing", async () => {
 		const client = makeClient();
@@ -142,7 +154,7 @@ describe("RED: spawn ENOENT must not crash pi", () => {
 		let rejected = false;
 		let rejectErr: unknown = null;
 		try {
-			await client.connect();
+			await connectAndHandshake(client);
 		} catch (err) {
 			rejected = true;
 			rejectErr = err;
@@ -169,7 +181,7 @@ describe("RED: spawn ENOENT must not crash pi", () => {
 		const [capture, remove] = captureUncaught();
 		let rejectErr: unknown = null;
 		try {
-			await client.connect();
+			await connectAndHandshake(client);
 		} catch (err) {
 			rejectErr = err;
 		}

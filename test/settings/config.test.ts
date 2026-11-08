@@ -9,7 +9,7 @@
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 // We mock homedir so global config goes to a temp dir
@@ -49,7 +49,7 @@ function cleanFakeHome() {
 }
 
 function writeJson(path: string, data: unknown) {
-	mkdirSync(path.substring(0, path.lastIndexOf("/")), { recursive: true });
+	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, JSON.stringify(data, null, 2), "utf-8");
 }
 
@@ -257,6 +257,6 @@ describe("ACP tool settings — config", () => {
 
 	it("getProjectSettingsPath returns <cwd>/.pi/acp-agents/settings.json", () => {
 		const path = getProjectSettingsPath("/my/project");
-		expect(path).toBe("/my/project/.pi/acp-agents/settings.json");
+		expect(path).toBe(resolve("/my/project", ".pi", "acp-agents", "settings.json"));
 	});
 });

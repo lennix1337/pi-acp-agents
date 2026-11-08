@@ -19,14 +19,15 @@ describe("B1 — config path respects PI_CODING_AGENT_DIR", () => {
     process.env.PI_CODING_AGENT_DIR = "/custom/pi/agent";
     const { resolveConfigPath } = await import("../src/config/config.js");
     const path = resolveConfigPath();
-    expect(path).toContain("/custom/pi/agent");
-    expect(path).toMatch(/acp-agents\/config\.json$/);
+    const posix = path.replaceAll("\\", "/");
+    expect(posix).toContain("/custom/pi/agent");
+    expect(posix).toMatch(/acp-agents\/config\.json$/);
   });
 
   it("resolveConfigPath returns ~/.pi/... when PI_CODING_AGENT_DIR not set", async () => {
     delete process.env.PI_CODING_AGENT_DIR;
     const { resolveConfigPath } = await import("../src/config/config.js");
     const path = resolveConfigPath();
-    expect(path).toMatch(/\.pi\/acp-agents\/config\.json$/);
+    expect(path.replaceAll("\\", "/")).toMatch(/\.pi\/acp-agents\/config\.json$/);
   });
 });

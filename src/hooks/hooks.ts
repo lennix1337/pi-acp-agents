@@ -7,7 +7,7 @@
  *   runAcpHook(path | paths[], { event, context, timeoutMs })
  *     → HookRunResult | { results: HookRunResult[] }
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { extname } from "node:path";
 
@@ -117,6 +117,25 @@ export async function runAcpHook(
 	return runOne(target, opts);
 }
 
+/**
+ * Kill a hook and everything it started. A POSIX process group takes
+ * the signal as a whole; Windows has no groups, so `taskkill /T` walks the
+ * tree. Killing only the direct child leaves grandchildren holding the
+ * stdout pipe open, which delays `close` until they exit on their own.
+ */
+function killHookTree(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void {
+	if (child.pid == null) return;
+	if (process.platform === "win32") {
+		try {
+			spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
+			return;
+		} catch { /* fall back to the direct kill below */ }
+	} else {
+		try { process.kill(-child.pid, signal); return; } catch { /* fall back below */ }
+	}
+	try { child.kill(signal); } catch { /* ignore */ }
+}
+
 function runOne(
 	scriptPath: string,
 	opts: RunAcpHookOptions,
@@ -151,20 +170,9 @@ function runOne(
 
 		const timer = setTimeout(() => {
 			timedOut = true;
-			// Process group kill is Unix-only; on Windows fall back to direct kill
-			let killed = false;
-			if (process.platform !== "win32") {
-				try { process.kill(-child.pid!, "SIGTERM"); killed = true; } catch { /* fallback below */ }
-			}
-			if (!killed) { try { child.kill("SIGTERM"); } catch { /* ignore */ } }
+			killHookTree(child, "SIGTERM");
 			// Force kill if still alive shortly after
-			setTimeout(() => {
-				let forceKilled = false;
-				if (process.platform !== "win32") {
-					try { process.kill(-child.pid!, "SIGKILL"); forceKilled = true; } catch { /* fallback below */ }
-				}
-				if (!forceKilled) { try { child.kill("SIGKILL"); } catch { /* ignore */ } }
-			}, 200);
+			setTimeout(() => killHookTree(child, "SIGKILL"), 200);
 		}, opts.timeoutMs);
 
 		child.stdout?.on("data", (chunk: Buffer | string) => {
@@ -195,6 +203,16 @@ function runOne(
 		child.on("error", () => {
 			// Spawn failure (e.g. missing interpreter) → treat as failure
 			finish(127);
+		});
+		// After a timeout the hook may leave grandchildren holding the stdout
+		// and stderr pipes (Windows has no process groups), so `close` can
+		// arrive long after the hook itself is dead. Settle on `exit` and
+		// release the pipes instead of waiting for them.
+		child.on("exit", (code) => {
+			if (!timedOut) return;
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			finish(code ?? 1);
 		});
 		child.on("close", (code) => {
 			// Fix 3: `code ?? 0` treated a signal-terminated hook (null exit

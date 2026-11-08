@@ -29,7 +29,9 @@ function createStaleSocket(p: string): void {
 import { SocketPublisher, SocketSubscriber } from "../../src/hooks/socket-bus.js";
 import type { SocketEvent } from "../../src/hooks/types.js";
 
-describe("socket-bus", () => {
+// Unix domain sockets at file paths (and SO_PEERCRED, Linux only): Windows
+// cannot listen on a file path, so the bus is not exercised there.
+describe.skipIf(process.platform === "win32")("socket-bus", () => {
   let tmpDir: string;
   let sockPath: string;
 
