@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /**
  * Tests that the unified 7-tool surface is registered in the extension entry point.
@@ -9,7 +10,7 @@ import { readFileSync } from "node:fs";
  * asserted ABSENT.
  */
 describe("Level 2 — tool registration in index.ts", () => {
-  const indexPath = new URL("../index.ts", import.meta.url).pathname;
+  const indexPath = fileURLToPath(new URL("../index.ts", import.meta.url));
   const source = readFileSync(indexPath, "utf-8");
 
   const UNIFIED_TOOLS = [

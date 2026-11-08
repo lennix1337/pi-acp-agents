@@ -81,7 +81,7 @@ describe("killWithEscalation", () => {
 		expect(proc.kill).not.toHaveBeenCalled();
 	});
 
-	it("sends SIGTERM then SIGKILL after timeout", async () => {
+	it.skipIf(process.platform === "win32")("sends SIGTERM then SIGKILL after timeout", async () => {
 		const proc = new EventEmitter() as any;
 		proc.killed = false;
 		proc.kill = vi.fn(() => {
@@ -104,7 +104,7 @@ describe("killWithEscalation", () => {
 		expect(() => killWithEscalation(proc)).not.toThrow();
 	});
 
-	it("catches SIGKILL error when already dead", async () => {
+	it.skipIf(process.platform === "win32")("catches SIGKILL error when already dead", async () => {
 		const proc = new EventEmitter() as any;
 		let killCallCount = 0;
 		proc.killed = false;

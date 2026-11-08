@@ -48,7 +48,8 @@ describe("resolveHookCommand — cross-platform resolution", () => {
 		expect(resolved.args).toContain(scriptPath);
 	});
 
-	it("uses executable binary directly when no known extension", () => {
+	// Windows has no exec bit: extensionless hooks run through bash there.
+	it.skipIf(process.platform === "win32")("uses executable binary directly when no known extension", () => {
 		const scriptPath = join(dir, "on-complete");
 		writeFileSync(scriptPath, "#!/usr/bin/env bash\necho hi\n");
 		chmodSync(scriptPath, 0o755);

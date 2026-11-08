@@ -69,6 +69,6 @@ describe('Worker Worktree Isolation', () => {
 		const worktreePath = manager.create(tempDir, workerName);
 
 		// Should be under .worktrees directory
-		expect(worktreePath).toMatch(/\.worktrees\/acp-verifier-1/);
+		expect(worktreePath).toMatch(/\.worktrees[\\/]acp-verifier-1/);
 	});
 });
