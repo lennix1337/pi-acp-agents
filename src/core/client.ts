@@ -107,6 +107,11 @@ import {
 	validatePromptResponse,
 } from "./protocol-validator.js";
 
+/** Bounded, metadata-only notifications. Thought text is never forwarded here. */
+export type HarnessProgress =
+	| { type: "update"; updateType: string }
+	| { type: "permission"; title: string; options: Array<{ kind: string; name: string; optionId: string }>; omittedOptions: number; outcome: "cancelled" };
+
 export interface AcpClientOptions {
 	agentName: string;
 	config: AcpAgentConfig;
@@ -114,6 +119,8 @@ export interface AcpClientOptions {
 	clientInfo?: { name: string; version: string };
 	logger?: Logger;
 	logsDir?: string;
+	/** Opt in to non-interactive, fail-closed worker behavior. No authentication is attempted. */
+	harness?: { onProgress?: (event: HarnessProgress) => void };
 	onActivity?: (sessionId: string) => void;
 	onSessionUpdate?: (sessionId: string, update: import("@agentclientprotocol/sdk").SessionUpdate) => void;
 }
@@ -137,6 +144,7 @@ export class AcpClient {
 	private sessionLogger?: Logger;
 	private logsDir?: string;
 	private lastStderr = "";
+	private harness?: AcpClientOptions["harness"];
 	private onActivity?: (sessionId: string) => void;
 	private onSessionUpdate?: (sessionId: string, update: import("@agentclientprotocol/sdk").SessionUpdate) => void;
 	/**
@@ -172,6 +180,7 @@ export class AcpClient {
 		};
 		this.logger = opts.logger;
 		this.logsDir = opts.logsDir;
+		this.harness = opts.harness;
 		this.onActivity = opts.onActivity;
 		this.onSessionUpdate = opts.onSessionUpdate;
 	}
@@ -222,7 +231,7 @@ export class AcpClient {
 				cwd: this.cwd,
 				env: { ...process.env, ...this.config.env },
 				stdio: ["pipe", "pipe", "pipe"],
-				shell: platform() === "win32",
+				shell: !this.harness && platform() === "win32",
 			});
 		} catch (err: unknown) {
 			const _e = classifyConnectionError(err, this.agentName, cmd);
@@ -334,6 +343,21 @@ export class AcpClient {
 				sessionUpdate: (params: SessionNotification) =>
 					this.handleSessionUpdate(params),
 				requestPermission: (params: RequestPermissionRequest) => {
+					if (this.harness) {
+						const options = Array.isArray(params.options) ? params.options : [];
+						this.emitHarnessProgress({
+							type: "permission",
+							title: String(params.toolCall?.title ?? "tool call").slice(0, 256),
+							options: options.slice(0, 16).map(option => ({
+								kind: String(option?.kind ?? "").slice(0, 64),
+								name: String(option?.name ?? "").slice(0, 256),
+								optionId: String(option?.optionId ?? "").slice(0, 256),
+							})),
+							omittedOptions: Math.max(0, options.length - 16),
+							outcome: "cancelled",
+						});
+						return Promise.resolve({ outcome: { outcome: "cancelled" as const } });
+					}
 					const { response, summary } = decidePermission(params);
 					this.logger?.info("permission", summary);
 					return Promise.resolve(response);
@@ -450,6 +474,7 @@ export class AcpClient {
 				clientInfo: this.clientInfo,
 			});
 		} catch (err: unknown) {
+			if (this.harness) throw err;
 			const _e = classifyConnectionError(err, this.agentName, this.config.command!, this.lastStderr);
 			if (_e instanceof AcpProtocolError)
 				throw new AcpProtocolError({
@@ -468,7 +493,7 @@ export class AcpClient {
 		this._agentInfo = resp;
 
 		// Auto-authenticate with first available method
-		if (resp.authMethods && resp.authMethods.length > 0) {
+		if (!this.harness && resp.authMethods && resp.authMethods.length > 0) {
 			try {
 				await this.conn.authenticate({ methodId: resp.authMethods[0]!.id });
 			} catch (err) {
@@ -506,6 +531,7 @@ export class AcpClient {
 				mcpServers: [],
 			});
 		} catch (err: unknown) {
+			if (this.harness) throw err;
 			const _e = classifyConnectionError(err, this.agentName, this.config.command!, this.lastStderr);
 			if (_e instanceof AcpProtocolError)
 				throw new AcpProtocolError({
@@ -586,6 +612,7 @@ export class AcpClient {
 				prompt: [{ type: "text", text: message }],
 			});
 		} catch (err: unknown) {
+			if (this.harness) throw err;
 			const classified = classifyConnectionError(err, this.agentName, this.config.command!, this.lastStderr);
 			if (classified instanceof AcpProtocolError)
 				throw new AcpProtocolError({
@@ -707,12 +734,21 @@ export class AcpClient {
 		this._sessionId = null;
 	}
 
+	private emitHarnessProgress(event: HarnessProgress): void {
+		try {
+			this.harness?.onProgress?.(event);
+		} catch (error) {
+			this.logger?.warn("harness progress callback failed", error);
+		}
+	}
+
 	/** Handle session/update notifications — accumulate text chunks */
 	private async handleSessionUpdate(
 		params: SessionNotification,
 	): Promise<void> {
 		const update = params.update as Record<string, unknown>;
 		const updateType = update.sessionUpdate;
+		if (this.harness) this.emitHarnessProgress({ type: "update", updateType: String(updateType).slice(0, 128) });
 
 		// Log all updates for debugging
 		this.logger?.debug("session update", { updateType: String(updateType), keys: Object.keys(update) });
@@ -727,7 +763,7 @@ export class AcpClient {
 			this.onSessionUpdate?.(this._sessionId, params.update);
 		}
 
-		if (updateType === "agent_message_chunk" || updateType === "agent_thought_chunk") {
+		if (updateType === "agent_message_chunk" || (!this.harness && updateType === "agent_thought_chunk")) {
 			const content = update.content as
 				| { type?: string; text?: string }
 				| undefined;

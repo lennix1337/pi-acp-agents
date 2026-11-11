@@ -2,6 +2,8 @@
 
 > Multi-agent orchestration for pi — spawn, control, and coordinate ACP-compatible agents (Gemini CLI, Claude, Codex, custom) as first-class tools within the pi coding agent.
 
+For a non-interactive external-worker client with fail-closed permissions, see the [harness ACP client guide](https://github.com/buihongduc132/pi-acp-agents/blob/main/docs/harness-acp-client.md).
+
 [![npm version](https://img.shields.io/npm/v/@buihongduc132/pi-acp-agents.svg)](https://www.npmjs.com/package/@buihongduc132/pi-acp-agents)
 [![CI](https://github.com/buihongduc132/pi-acp-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/buihongduc132/pi-acp-agents/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/@buihongduc132/pi-acp-agents.svg)](https://github.com/buihongduc132/pi-acp-agents/blob/main/LICENSE)

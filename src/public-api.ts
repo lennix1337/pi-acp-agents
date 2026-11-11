@@ -29,6 +29,7 @@ export type {
 } from "pi-acp-types";
 
 // Core classes (stable API for extensions)
+export { AcpClient, type AcpClientOptions, type HarnessProgress } from "./core/client.js";
 export { AcpCircuitBreaker } from "./core/circuit-breaker.js";
 export { HealthMonitor } from "./core/health-monitor.js";
 export { SessionManager } from "./core/session-manager.js";
@@ -69,4 +70,4 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-export const version: string = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf-8")).version;
+export const version: string = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8")).version;
