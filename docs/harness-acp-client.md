@@ -17,3 +17,8 @@ On Windows, `agy` 1.5.6 installs a native executable (`%LOCALAPPDATA%\agy\bin\ag
 - `authMethods`: `oauth-personal`, `oauth-business`, `gemini-api-key`, `agent-platform`.
 
 With the user already signed in to `agy` (Google account, stored by the CLI itself), `connect()`, `initialize()`, `newSession()` and `prompt("Responda só: ok")` succeeded on 2026-11-12 without calling `authenticate`: reply `ok`, `stopReason` `end_turn`, about 10 s end to end, 4 `update` progress events. Permission requests and long tasks were not exercised live.
+
+
+## One-shot worker task
+
+`runAcpWorkerTask({ agentName, config, cwd, prompt, timeoutMs })` (or `runHarnessTask` with an injected client) runs connect → initialize → one session → one prompt and always disposes. It never throws: the result is `{ ok: true, text, stopReason, updates }` or `{ ok: false, error, phase }` (`phase` names the step that failed or timed out). `updates` only counts progress events. The timeout covers the whole run. Live use against `agy acp` is not exercised by the unit tests.

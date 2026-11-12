@@ -30,6 +30,7 @@ export type {
 
 // Core classes (stable API for extensions)
 export { AcpClient, type AcpClientOptions, type HarnessProgress } from "./core/client.js";
+export { runHarnessTask, runAcpWorkerTask, type HarnessTaskResult, type HarnessTaskOptions, type HarnessTaskClient } from "./core/harness-task.js";
 export { AcpCircuitBreaker } from "./core/circuit-breaker.js";
 export { HealthMonitor } from "./core/health-monitor.js";
 export { SessionManager } from "./core/session-manager.js";
