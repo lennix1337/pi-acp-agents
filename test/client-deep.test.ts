@@ -194,6 +194,22 @@ describe("AcpClient — deep branches", () => {
 			expect(sessionId).toBe("sess-4");
 		});
 
+		it("a harness worker refuses a model the agent does not offer", async () => {
+			const client = createClient({ config: { command: "c", args: [], default_model: "gemini-3.8-flash-medium" }, harness: {} });
+			const conn = await connectAndGetConn(client);
+			conn.newSession.mockResolvedValueOnce({ sessionId: "sess-h", models: { currentModelId: "gemini-4-argon-medium", availableModels: [{ modelId: "gemini-4-argon-medium", name: "Argon" }] }, modes: {} });
+			await expect(client.newSession()).rejects.toThrow(/not offered/);
+			expect(conn.unstable_setSessionModel).not.toHaveBeenCalled();
+		});
+
+		it("a harness worker fails when setting its model fails", async () => {
+			const client = createClient({ config: { command: "c", args: [], default_model: "gemini-3.8-flash-medium" }, harness: {} });
+			const conn = await connectAndGetConn(client);
+			conn.newSession.mockResolvedValueOnce({ sessionId: "sess-h2", models: { availableModels: [{ modelId: "gemini-3.8-flash-medium", name: "Flash" }] }, modes: {} });
+			conn.unstable_setSessionModel.mockRejectedValueOnce(new Error("model fail"));
+			await expect(client.newSession()).rejects.toThrow("model fail");
+		});
+
 		it("handles set mode failure gracefully", async () => {
 			const client = createClient({
 				config: { command: "c", args: [], default_mode: "auto" },

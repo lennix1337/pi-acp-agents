@@ -553,13 +553,19 @@ export class AcpClient {
 		this.ensureSessionLog(resp.sessionId);
 
 		// Set default model if configured (best-effort, Zed-style default_model)
+		// A harness worker must run on the model it was given: an unknown or refused model fails the task.
 		if (this.config.default_model) {
+			const available = resp.models?.availableModels?.map((m) => m.modelId);
+			if (this.harness && available?.length && !available.includes(this.config.default_model)) {
+				throw new Error(`model ${this.config.default_model} not offered by ${this.agentName}; available: ${available.join(", ")}`);
+			}
 			try {
 				await this.conn.unstable_setSessionModel({
 					sessionId: resp.sessionId,
 					modelId: this.config.default_model,
 				});
 			} catch (err) {
+				if (this.harness) throw err;
 								// Setting model is best-effort
 				this.logger?.debug("Set model failed (best-effort)", err);
 			}
