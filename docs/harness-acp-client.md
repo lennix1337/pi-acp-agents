@@ -8,4 +8,12 @@ Every permission request is cancelled, even if an allow option is offered; there
 
 This mode starts an executable directly without a shell on every platform. Arguments are passed separately and are not interpreted as shell syntax. Configure a trusted absolute native executable path and fixed argument array; do not pass a shell command line or untrusted executable/configuration. On Windows, a shell wrapper such as a `.cmd` file is not itself a native executable. Resolve the installed wrapper and inspect its contents and package metadata **read-only** to identify the real executable or script entry point; if it launches a trusted Node script, use the absolute path to the trusted Node executable as `command` and the absolute script path followed by arguments as `args`. Do not execute the wrapper, log in, or invoke a model merely to discover this mapping. If the entry point cannot be established, report the blocker rather than guessing or enabling a shell. An unavailable/non-executable command rejects the connection or initialization.
 
-This is not a sandbox: the spawned executable runs with the host user's privileges and environment and can perform actions without asking ACP permission. Restrict executable trust and use an independently appropriate OS sandbox where required. Capabilities are server claims, not proof that steering or session resumption works; neither is promised by this interface. The Antigravity executable mapping and live ACP behavior have not been verified here.
+This is not a sandbox: the spawned executable runs with the host user's privileges and environment and can perform actions without asking ACP permission. Restrict executable trust and use an independently appropriate OS sandbox where required. Capabilities are server claims, not proof that steering or session resumption works; neither is promised by this interface. ## Antigravity (`agy`)
+
+On Windows, `agy` 1.5.6 installs a native executable (`%LOCALAPPDATA%\agy\bin\agy.EXE`, PE32+), so no wrapper mapping is needed: use its absolute path as `command` and `["acp"]` as `args`. A handshake-only check (`connect()` + `initialize()`, no session, no login, no model call) returned:
+
+- `agentInfo`: `Antigravity ACP Server` 1.5.6, `protocolVersion` 1;
+- `agentCapabilities`: `loadSession`, prompt images and embedded context (no audio), session `resume`/`close`/`load`/`list`/`additionalDirectories`;
+- `authMethods`: `oauth-personal`, `oauth-business`, `gemini-api-key`, `agent-platform`.
+
+Sessions and prompts were not exercised: whether `newSession()` requires prior authentication, and how prompts, permissions and progress behave live, remain unverified.
