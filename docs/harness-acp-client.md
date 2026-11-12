@@ -16,4 +16,4 @@ On Windows, `agy` 1.5.6 installs a native executable (`%LOCALAPPDATA%\agy\bin\ag
 - `agentCapabilities`: `loadSession`, prompt images and embedded context (no audio), session `resume`/`close`/`load`/`list`/`additionalDirectories`;
 - `authMethods`: `oauth-personal`, `oauth-business`, `gemini-api-key`, `agent-platform`.
 
-Sessions and prompts were not exercised: whether `newSession()` requires prior authentication, and how prompts, permissions and progress behave live, remain unverified.
+With the user already signed in to `agy` (Google account, stored by the CLI itself), `connect()`, `initialize()`, `newSession()` and `prompt("Responda só: ok")` succeeded on 2026-11-12 without calling `authenticate`: reply `ok`, `stopReason` `end_turn`, about 10 s end to end, 4 `update` progress events. Permission requests and long tasks were not exercised live.
